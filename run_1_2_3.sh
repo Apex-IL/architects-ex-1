@@ -6,7 +6,7 @@ nebius ai job create \
     --image cr.eu-north1.nebius.cloud/e00v1er5fasm8gmdwy/apex-ex-1 \
     --container-command bash \
     --args '-c "git clone -b bary-testing https://github.com/Apex-IL/architects-ex-1.git && cd architects-ex-1 && python solution_1_2_3.py"' \
-    --platform gpu-l40s-a \
-    --preset 1gpu-16vcpu-64gb \
+    --platform gpu-l40s-d \
+    --preset 1gpu-16vcpu-96gb \
     --timeout 20m \
     --volume computefilesystem-e00hnnpfn5rr5aavma:/mnt/data

@@ -200,10 +200,22 @@ torch.set_float32_matmul_precision('high')
 model = GPT(GPTConfig(vocab_size=50304))
 model.to(device)
 
+max_lr = 6e-4
+min_lr = max_lr * 0.1
+warmup_steps = 715
 max_steps = 100
-learning_rate = 6e-4
 
-optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=learning_rate, device_type=device_type)
+def get_lr(it):
+    if it < warmup_steps:
+        return max_lr * (it+1) / warmup_steps
+    if it > max_steps:
+        return min_lr
+    decay_ratio = (it - warmup_steps) / (max_steps - warmup_steps)
+    assert 0 <= decay_ratio <= 1
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
+    return min_lr + coeff * (max_lr - min_lr)
+
+optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=max_lr, device_type=device_type)
 model = torch.compile(model)
 
 log_dir = "log"
@@ -242,6 +254,9 @@ for step in range(max_steps):
         logits, loss = model(x, y)
     loss.backward()
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    lr = get_lr(step)
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
     optimizer.step()
 
     if device_type == "cuda":
@@ -249,6 +264,6 @@ for step in range(max_steps):
     t1 = time.time()
     dt = t1 - t0
     tokens_per_sec = (B * T) / dt
-    print(f"step {step:5d} | loss: {loss.item():.6f} | norm: {norm:.4f} | dt: {dt*1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}")
+    print(f"step {step:5d} | loss: {loss.item():.6f} | lr {lr:.4e} | norm: {norm:.4f} | dt: {dt*1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}")
     with open(log_file, "a") as f:
         f.write(f"{step} train {loss.item():.6f}\n")

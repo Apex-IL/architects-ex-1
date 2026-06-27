@@ -31,8 +31,8 @@ nebius ai job create \\
                                         \--image cr.eu-north1.nebius.cloud/e00v1er5fasm8gmdwy/apex-ex-1 \\  
                                         \--container-command bash \\  
                                         \--args '-c "git clone https://github.com/Apex-IL/architects-ex-1.git \-b smoke-test && cd architects-ex-1 && python train\_gpt2.py"' \\  
-                                        \--platform gpu-l40s-a \\  
-                                        \--preset 1gpu-16vcpu-64gb \\  
+                                        \--platform gpu-l40s-d \\  
+                                        \--preset 1gpu-16vcpu-96gb \\  
                                         \--timeout 15m \\  
                                         \--volume computefilesystem-e00hnnpfn5rr5aavma:/mnt/data
 
@@ -59,8 +59,8 @@ nebius ai job create \\
                                         \--image cr.eu-north1.nebius.cloud/e00v1er5fasm8gmdwy/apex-ex-1 \\  
                                         \--container-command bash \\  
                                         \--args '-c "git clone \<your-repo-url.git\> && cd architects-ex-1 && python train\_gpt2.py"' \\  
-                                        \--platform gpu-l40s-a \\  
-                                        \--preset 1gpu-16vcpu-64gb \\  
+                                        \--platform gpu-l40s-d \\  
+                                        \--preset 1gpu-16vcpu-96gb \\  
                                         \--timeout 15m \\  
                                         \--volume computefilesystem-e00hnnpfn5rr5aavma:/mnt/data
 
