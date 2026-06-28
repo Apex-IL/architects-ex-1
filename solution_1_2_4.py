@@ -189,7 +189,7 @@ torch.manual_seed(1337)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(1337)
 
-B = 64    # flash attention's O(N) memory allows a much larger batch
+B = 32    # flash attention's O(N) memory allows a much larger batch
 T = 1024
 
 train_loader = DataLoaderLite(B=B, T=T, split="train")
