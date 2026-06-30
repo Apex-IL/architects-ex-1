@@ -87,3 +87,170 @@ This is another small change that massively impacts performance
 
 Replace your attention implementation with pytorch built-in flash attention implementation.
 
+---
+
+## 1.3 Distributed Data Parallel (DDP) on 8 H100 GPUs
+
+**total time: 1-2 hr**
+
+**Relevant part in video: 2:08:00-2:34:00**
+
+### Background
+
+**What is DDP?**
+
+Distributed Data Parallel (DDP) is PyTorch's standard approach to multi-GPU training. The idea is simple: run an identical copy of the model on each GPU, feed each copy a different slice of data, and after every backward pass automatically average the gradients across all GPUs. Because every GPU sees the same averaged gradient, all copies stay in sync and you effectively train with a batch size that is `world_size` times larger.
+
+**Key concepts:**
+- **Rank**: a unique integer ID for each process (0 to N-1). Rank 0 is the "master process" that handles logging and checkpointing.
+- **World size**: total number of processes (= number of GPUs).
+- **`torchrun`**: the launcher that spawns one process per GPU and sets the environment variables `RANK`, `LOCAL_RANK`, and `WORLD_SIZE` that DDP reads.
+
+**Loss averaging**: After each training step, each GPU has computed its own local loss on its own data shard — a different number per GPU. To log one meaningful value, average it across all GPUs with `dist.all_reduce`.
+
+---
+
+### Step 1 — Wrap the model in DDP
+
+After `model.to(device)`, add:
+
+```python
+if ddp:
+    model = DDP(model, device_ids=[ddp_local_rank])
+raw_model = model.module if ddp else model  # unwrapped model, for checkpointing / optimizer
+```
+
+`DDP(model, ...)` returns a wrapper that hooks into the backward pass and runs an all-reduce on gradients automatically. `raw_model` gives you access to the underlying `GPT` object — you'll need it whenever you call methods defined on your own class (like `configure_optimizers`) or save checkpoints.
+
+---
+
+### Step 2 — Call `configure_optimizers` on `raw_model`
+
+The optimizer should be configured on the unwrapped model. Change:
+
+```python
+optimizer = model.configure_optimizers(...)
+```
+to:
+```python
+optimizer = raw_model.configure_optimizers(...)
+```
+
+---
+
+### Step 3 — Scale up B, T, and max\_steps
+
+With 8 GPUs you can afford much larger batches. Update:
+
+```python
+B = 64   # micro batch size (was 4)
+T = 1024 # sequence length (was 64)
+max_steps = 19073  # ~1 epoch over 10B tokens at 0.5M token batches (was 50)
+```
+
+---
+
+### Step 4 — Two DDP-specific additions to the training loop
+
+Your training loop from 1.2.x has `loss.backward()`, gradient clipping, and `optimizer.step()`. You only need to add two things:
+
+**After `loss.backward()`, before `clip_grad_norm_` — average the loss across GPUs for logging**
+
+Each process computed its loss on its own data shard, so each has a different number. To log one meaningful value, average it across all processes:
+
+```python
+loss_val = loss.detach()
+if ddp:
+    dist.all_reduce(loss_val, op=dist.ReduceOp.AVG)
+```
+
+Then use `loss_val` in your print/log instead of `loss`. This does not affect training — DDP already averaged the gradients in the backward pass. It only affects the scalar you print.
+
+**Guard prints and logging with `if master_process:`**
+
+All 8 processes would otherwise write to stdout and to the log file simultaneously. Wrap every `print(...)` and log write in the training loop with:
+
+```python
+if master_process:
+    print(...)
+```
+
+Also update `tokens_per_sec` to count tokens across all GPUs:
+
+```python
+tokens_per_sec = (B * T * ddp_world_size) / dt  # was B * T
+```
+
+---
+
+### Step 5 — Save checkpoints to the shared volume
+
+All teams share the volume mounted at `/mnt/models`. Pick a unique team name and save checkpoints into your own subdirectory so you don't overwrite each other.
+
+Add a `TEAM_NAME` constant near the top of your training script:
+
+```python
+TEAM_NAME = "your-team"  # set this before running
+```
+
+Then, inside the validation block (which already runs every 250 steps), save a checkpoint right after computing `val_loss_accum` — only from the master process:
+
+```python
+if master_process:
+    model_dir = f"/mnt/models/{TEAM_NAME}"
+    os.makedirs(model_dir, exist_ok=True)
+    checkpoint = {
+        'model': raw_model.state_dict(),
+        'config': raw_model.config,
+        'step': step,
+        'val_loss': val_loss_accum.item(),
+    }
+    torch.save(checkpoint, os.path.join(model_dir, f"model_{step:05d}.pt"))
+```
+
+Use `raw_model.state_dict()` (not `model.state_dict()`) to save weights without the DDP wrapper.
+
+---
+
+### Step 6 — Evaluate: generation and HellaSwag
+
+After training, run `eval_1_3.py` on a single GPU to load a checkpoint, generate text, and score on HellaSwag:
+
+```bash
+python eval_1_3.py --checkpoint /mnt/models/<your-team>/model_01000.pt
+```
+
+The script will:
+1. Reconstruct the `GPT` model from the saved config and load the weights.
+2. Generate 5 continuations of `"Hello, I'm a language model,"` using top-50 sampling.
+3. Run the full HellaSwag validation set (10,042 examples) and report normalized accuracy.
+
+A randomly-initialized GPT-2 scores ~25% (chance = 25% for 4-way choice). After a short run you should already see improvement; the full 1-epoch trained model reaches ~30%.
+
+---
+
+### Launch with torchrun on Nebius (8 H100 GPUs)
+
+```bash
+nebius ai job create \
+    --name ex1-3-<your-name> \
+    --image cr.eu-north1.nebius.cloud/e00v1er5fasm8gmdwy/apex-ex-1 \
+    --container-command bash \
+    --args '-c "git clone <your-repo-url.git> && cd architects-ex-1 && torchrun --standalone --nproc_per_node=8 train_gpt2.py"' \
+    --platform gpu-h100-sxm \
+    --preset 8gpu-160vcpu-1600gb \
+    --timeout 30m \
+    --volume computefilesystem-e00hnnpfn5rr5aavma:/mnt/data \
+    --volume computefilesystem-e00yzm564mmdvedbsj:/mnt/models
+```
+
+Note: the platform changes from `gpu-l40s-d` to `gpu-h100-sxm`. Two volumes are mounted: `/mnt/data` for the training data and `/mnt/models` for shared checkpoint storage.
+
+---
+
+### What to observe
+
+- The `tok/sec` throughput should be close to 8× what you saw on a single GPU.
+- All 8 processes compute the same loss at every step (because of the `all_reduce`), but only rank 0 prints and writes to the log file.
+- After training, checkpoint files appear in `/mnt/models/<your-team>/`.
+
