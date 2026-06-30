@@ -238,7 +238,7 @@ nebius ai job create \
     --container-command bash \
     --args '-c "git clone <your-repo-url.git> && cd architects-ex-1 && torchrun --standalone --nproc_per_node=8 train_gpt2.py"' \
     --platform gpu-h100-sxm \
-    --preset 8gpu-160vcpu-1600gb \
+    --preset 8gpu-128vcpu-1600gb \
     --timeout 30m \
     --volume computefilesystem-e00hnnpfn5rr5aavma:/mnt/data \
     --volume computefilesystem-e00yzm564mmdvedbsj:/mnt/models
